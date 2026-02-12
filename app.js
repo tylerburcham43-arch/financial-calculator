@@ -37,6 +37,9 @@
     // RCL mode
     rclMode: false,
     
+    // CPT armed mode (waiting for user to press a variable to compute)
+    computeArmed: false,
+    
     // Arithmetic
     operator: null,
     operand: null,
@@ -168,7 +171,9 @@
     });
     
     // Update entry label
-    if (state.rclMode) {
+    if (state.computeArmed) {
+      elements.entryLabel.textContent = 'CPT →';
+    } else if (state.rclMode) {
       elements.entryLabel.textContent = 'RCL';
     } else if (state.mode === 'cf') {
       elements.entryLabel.textContent = `CF${state.cfIndex} =`;
@@ -195,6 +200,7 @@
   function appendDigit(digit) {
     clearMessage();
     state.rclMode = false;
+    state.computeArmed = false;
     
     if (state.isNewEntry) {
       state.entry = digit === '.' ? '0.' : digit;
@@ -247,10 +253,21 @@
   }
 
   function deleteLastChar() {
+    // Clear armed modes on any input action
+    state.computeArmed = false;
+    state.rclMode = false;
+    
+    // If entry buffer is empty (default state), do nothing
+    if (state.isNewEntry && state.entry === '0') {
+      return;
+    }
+    
+    // If only one character (or "-X"), reset to empty state
     if (state.entry.length <= 1 || (state.entry.length === 2 && state.entry.startsWith('-'))) {
       state.entry = '0';
       state.isNewEntry = true;
     } else {
+      // Remove last character
       state.entry = state.entry.slice(0, -1);
     }
     updateDisplay();
@@ -627,7 +644,9 @@
     const blankVars = tvmVars.filter(v => state[v] === null);
     
     if (blankVars.length === 0) {
-      showMessage('CLEAR ONE VALUE TO COMPUTE', 'info');
+      // All registers are set - arm CPT mode so next TVM key press computes that variable
+      state.computeArmed = true;
+      showMessage('CPT → PRESS VARIABLE TO SOLVE', 'info');
       return;
     }
     
@@ -701,24 +720,112 @@
     }
   }
 
+  /**
+   * Compute a specific variable (used when CPT is armed and user presses a TVM key)
+   * This temporarily treats the selected variable as null, computes it, then stores the result
+   */
+  function computeVariable(varName) {
+    // Disarm CPT mode
+    state.computeArmed = false;
+    clearMessage();
+    
+    // Check if P/Y and C/Y are set
+    if (state.py <= 0 || state.cy <= 0) {
+      showMessage('SET P/Y AND C/Y', 'error');
+      return;
+    }
+    
+    // Temporarily set this variable to null so we can compute it
+    const originalValue = state[varName];
+    state[varName] = null;
+    
+    // Get values (the target is now null)
+    const n = state.N;
+    const iy = state.IY;
+    const pv = state.PV;
+    const pmt = state.PMT;
+    const fv = state.FV;
+    const cy = state.cy;
+    const py = state.py;
+    const isBegin = state.BGN;
+    
+    let result;
+    
+    try {
+      switch (varName) {
+        case 'FV': {
+          const i = getPeriodicRate(iy, cy, py);
+          result = solveFV(n, i, pv, pmt, isBegin);
+          break;
+        }
+        case 'PV': {
+          const i = getPeriodicRate(iy, cy, py);
+          result = solvePV(n, i, pmt, fv, isBegin);
+          break;
+        }
+        case 'PMT': {
+          const i = getPeriodicRate(iy, cy, py);
+          result = solvePMT(n, i, pv, fv, isBegin);
+          break;
+        }
+        case 'N': {
+          const i = getPeriodicRate(iy, cy, py);
+          result = solveN(i, pv, pmt, fv, isBegin);
+          break;
+        }
+        case 'IY': {
+          result = solveIY(n, pv, pmt, fv, cy, py, isBegin);
+          break;
+        }
+        default:
+          // Restore original value if unknown variable
+          state[varName] = originalValue;
+          showMessage('Invalid variable', 'error');
+          return;
+      }
+      
+      if (!isFinite(result)) {
+        // Restore original value on error
+        state[varName] = originalValue;
+        showMessage('No solution found', 'error');
+        return;
+      }
+      
+      // Store result
+      state[varName] = result;
+      state.lastComputed = result;
+      state.lastComputedVar = varName;
+      state.entry = formatNumber(result).replace(/,/g, '');
+      state.selectedVar = varName;
+      state.isNewEntry = true;
+      
+      const label = varName === 'IY' ? 'I/Y' : varName;
+      showMessage(`${label} = ${formatNumber(result)}`, 'success');
+      updateDisplay();
+      
+    } catch (e) {
+      console.error('Compute error:', e);
+      // Restore original value on error
+      state[varName] = originalValue;
+      showMessage('Calculation error', 'error');
+    }
+  }
+
   // ===== CLEAR FUNCTIONS =====
   
   function clearEntry() {
-    const now = Date.now();
+    // Clear any armed modes
+    state.computeArmed = false;
+    state.rclMode = false;
     
-    if (now - state.lastClearTime < 500) {
-      // Double press: clear all TVM registers
-      clearTVM();
-      showMessage('TVM cleared', 'info');
-    } else {
-      // Single press: clear entry only
-      state.entry = '0';
-      state.isNewEntry = true;
-      state.operator = null;
-      state.operand = null;
-    }
+    // CE clears entry buffer only (does NOT clear TVM registers)
+    // To clear a register to null: press its key with empty entry
+    state.entry = '0';
+    state.isNewEntry = true;
+    state.operator = null;
+    state.operand = null;
     
-    state.lastClearTime = now;
+    clearMessage();
     updateDisplay();
   }
 
@@ -1449,7 +1556,10 @@
         return;
       }
       
-      if (state.rclMode) {
+      if (state.computeArmed) {
+        // CPT was pressed, now user selected which variable to compute
+        computeVariable(varName);
+      } else if (state.rclMode) {
         recallVariable(varName);
       } else if (hasEntryValue()) {
         // Entry buffer has a value - store it into this register (ONE press stores)
