@@ -238,6 +238,10 @@
 
   // ===== VARIABLE STORAGE =====
   
+  /**
+   * Store entry buffer value into a TVM register
+   * Called when user types a value and then presses a TVM key
+   */
   function storeVariable(varName) {
     clearMessage();
     state.rclMode = false;
@@ -251,27 +255,25 @@
       if (state.lastComputedVar === varName) {
         state.lastComputedVar = null;
       }
+      
+      const label = varName === 'IY' ? 'I/Y' : varName;
+      showMessage(`${label} = ${formatNumber(value)}`, 'success');
     }
     // Note: CY and PY are handled by handleSettingKey, not here
     
-    state.entry = formatNumber(value).replace(/,/g, '');
+    // IMPORTANT: Clear entry buffer after storing to prevent carryover
+    state.entry = '0';
     state.isNewEntry = true;
     updateDisplay();
   }
 
-  function selectVariable(varName) {
-    state.selectedVar = varName;
-    
-    // Show current value in entry
-    const value = state[varName];
-    if (value !== null) {
-      state.entry = String(value);
-    } else {
-      state.entry = '0';
-    }
-    state.isNewEntry = true;
-    
-    updateDisplay();
+  /**
+   * Check if entry buffer has a value (user has typed something)
+   */
+  function hasEntryValue() {
+    // Entry buffer has a value if it's not the default '0' with isNewEntry flag
+    // or if isNewEntry is false (user has typed)
+    return !state.isNewEntry || state.entry !== '0';
   }
 
   /**
@@ -898,26 +900,23 @@
     const label = isPY ? 'P/Y' : 'C/Y';
     const currentValue = isPY ? state.py : state.cy;
     
-    // If entry buffer is empty (0 and new entry), just show current value
-    if (state.isNewEntry && state.entry === '0') {
-      showMessage(`${label} = ${currentValue}`, 'info');
-      state.entry = String(currentValue);
-      state.isNewEntry = true;
-      updateDisplay();
-      return;
-    }
-    
-    // Otherwise, try to store the entered value
-    const value = getEntryValue();
-    
-    // Use the setter function
-    const success = isPY ? setPY(value) : setCY(value);
-    
-    if (success) {
-      showMessage(`${label} = ${isPY ? state.py : state.cy}`, 'success');
-      // Clear entry buffer and refresh
-      state.entry = '0';
-      state.isNewEntry = true;
+    // If entry buffer has a value, store it (ONE press stores)
+    if (hasEntryValue()) {
+      const value = getEntryValue();
+      
+      // Use the setter function
+      const success = isPY ? setPY(value) : setCY(value);
+      
+      if (success) {
+        showMessage(`${label} = ${isPY ? state.py : state.cy}`, 'success');
+        // Clear entry buffer after storing
+        state.entry = '0';
+        state.isNewEntry = true;
+      }
+    } else {
+      // Entry buffer is empty - just show current value (don't clear P/Y or C/Y)
+      const displayVal = currentValue > 0 ? currentValue : '(not set)';
+      showMessage(`${label} = ${displayVal}`, 'info');
     }
     
     updateDisplay();
@@ -1425,12 +1424,12 @@
       
       if (state.rclMode) {
         recallVariable(varName);
-      } else if (state.isNewEntry && state.entry === '0') {
+      } else if (hasEntryValue()) {
+        // Entry buffer has a value - store it into this register (ONE press stores)
+        storeVariable(varName);
+      } else {
         // Entry buffer is empty - CLEAR this register (set to null)
         clearRegister(varName);
-      } else {
-        // Entry buffer has a value - store it
-        storeVariable(varName);
       }
       return;
     }
