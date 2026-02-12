@@ -21,32 +21,37 @@ function annuityFactor(i, n, isBegin) {
   return isBegin ? factor * (1 + i) : factor;
 }
 
+// FV = PV * (1+r)^N + PMT * annuityFactor
 function solveFV(n, i, pv, pmt, isBegin) {
-  const pvf = Math.pow(1 + i, n);
+  const compoundFactor = Math.pow(1 + i, n);
   const af = annuityFactor(i, n, isBegin);
-  return -(pv * pvf + pmt * af);
+  return pv * compoundFactor + pmt * af;
 }
 
+// PV = (FV - PMT*AF) / (1+r)^N
 function solvePV(n, i, pmt, fv, isBegin) {
-  const fvf = Math.pow(1 + i, n);
+  const compoundFactor = Math.pow(1 + i, n);
   const af = annuityFactor(i, n, isBegin);
-  return -(pmt * af + fv) / fvf;
+  return (fv - pmt * af) / compoundFactor;
 }
 
+// PMT = (FV - PV*(1+r)^N) / AF
 function solvePMT(n, i, pv, fv, isBegin) {
-  const fvf = Math.pow(1 + i, n);
+  const compoundFactor = Math.pow(1 + i, n);
   const af = annuityFactor(i, n, isBegin);
   if (Math.abs(af) < 1e-15) {
     return NaN;
   }
-  return -(pv * fvf + fv) / af;
+  return (fv - pv * compoundFactor) / af;
 }
 
+// From: FV = PV*(1+r)^N + PMT*AF
+// So: FV - PV*(1+r)^N - PMT*AF = 0
 function solveNNumeric(i, pv, pmt, fv, isBegin) {
   const f = (n) => {
-    if (n <= 0) return pv + fv;
-    const fvf = Math.pow(1 + i, n);
-    return pv * fvf + pmt * annuityFactor(i, n, isBegin) + fv;
+    if (n <= 0) return fv - pv;
+    const compoundFactor = Math.pow(1 + i, n);
+    return fv - pv * compoundFactor - pmt * annuityFactor(i, n, isBegin);
   };
   
   let lo = 0.01, hi = 1000;
@@ -74,15 +79,16 @@ function solveNNumeric(i, pv, pmt, fv, isBegin) {
   return (lo + hi) / 2;
 }
 
+// For PMT=0: N = ln(FV/PV) / ln(1+r)
 function solveN(i, pv, pmt, fv, isBegin) {
   if (Math.abs(i) < 1e-10) {
     if (Math.abs(pmt) < 1e-15) return NaN;
-    return -(pv + fv) / pmt;
+    return (fv - pv) / pmt;
   }
   
   if (Math.abs(pmt) < 1e-15) {
     if (Math.abs(pv) < 1e-15) return NaN;
-    const ratio = -fv / pv;
+    const ratio = fv / pv;
     if (ratio <= 0) return NaN;
     return Math.log(ratio) / Math.log(1 + i);
   }
@@ -122,26 +128,27 @@ function bisectionSolveI(f, lo, hi, maxIter) {
   return (lo + hi) / 2;
 }
 
+// Find i such that: FV - PV*(1+i)^N - PMT*AF = 0
 function solveIY(n, pv, pmt, fv, isBegin, cy, py) {
   const f = (i) => {
-    const fvf = Math.pow(1 + i, n);
+    const compoundFactor = Math.pow(1 + i, n);
     const af = annuityFactor(i, n, isBegin);
-    return pv * fvf + pmt * af + fv;
+    return fv - pv * compoundFactor - pmt * af;
   };
   
   const df = (i) => {
     if (Math.abs(i) < 1e-10) {
-      return pv * n + pmt * n * (n + 1) / 2;
+      return -pv * n - pmt * n * (n + 1) / 2;
     }
     
     const onePlusI = 1 + i;
     const onePlusIN = Math.pow(onePlusI, n);
-    const dFvf = n * Math.pow(onePlusI, n - 1);
+    const dCompound = n * Math.pow(onePlusI, n - 1);
     const af = (onePlusIN - 1) / i;
     const dAf = (n * Math.pow(onePlusI, n - 1) * i - (onePlusIN - 1)) / (i * i);
     const dAfBgn = isBegin ? (dAf * onePlusI + af) : dAf;
     
-    return pv * dFvf + pmt * dAfBgn;
+    return -pv * dCompound - pmt * dAfBgn;
   };
   
   let i = 0.05;
@@ -304,15 +311,16 @@ console.log('=== Financial Calculator Test Suite ===\n');
 
 // Test 1: Future Value - Simple compound interest
 // $10,000 at 5% annual for 10 years, monthly compounding
+// With new convention: FV = PV * (1+r)^N, so FV is negative (investment grows)
 test('FV: $10,000 at 5% for 10 years (monthly)', () => {
   const n = 120; // 10 years * 12 months
   const iy = 5; // 5% annual
-  const pv = -10000;
+  const pv = -10000;  // Invest $10,000
   const pmt = 0;
   const cy = 12, py = 12;
   const i = getPeriodicRate(iy, cy, py);
   const fv = solveFV(n, i, pv, pmt, false);
-  assertClose(fv, 16470.09, 1); // Expected: ~$16,470.09
+  assertClose(fv, -16470.09, 1); // PV*compound = -10000*1.647 = -16470
 });
 
 // Test 2: Present Value - Loan amount
@@ -355,10 +363,11 @@ test('N: Periods to double money at 7% annual (monthly)', () => {
 });
 
 // Test 5: Interest Rate - What rate doubles money in 7 years
+// With new convention: PV=-10000 (invest), FV=-20000 (doubled, still negative)
 test('I/Y: Rate to double money in 7 years (annual)', () => {
   const n = 7;
   const pv = -10000;
-  const fv = 20000;
+  const fv = -20000;  // Same sign as PV (account balance doubled)
   const pmt = 0;
   const cy = 1, py = 1;
   const iy = solveIY(n, pv, pmt, fv, false, cy, py);
@@ -366,16 +375,17 @@ test('I/Y: Rate to double money in 7 years (annual)', () => {
 });
 
 // Test 6: Savings with regular deposits
-// $0 initial, $500/month, 8% annual, 20 years
+// $0 initial, $500/month deposits, 8% annual, 20 years
+// PMT=-500 (deposit), FV will be negative (account balance)
 test('FV: Savings of $500/month at 8% for 20 years', () => {
   const n = 240;
   const iy = 8;
   const pv = 0;
-  const pmt = -500;
+  const pmt = -500;  // Deposit $500/month
   const cy = 12, py = 12;
   const i = getPeriodicRate(iy, cy, py);
   const fv = solveFV(n, i, pv, pmt, false);
-  assertClose(fv, 294510.21, 100); // Expected: ~$294,510
+  assertClose(fv, -294510.21, 100); // Negative = account balance
 });
 
 // Test 7: Retirement withdrawal - How much can you withdraw
@@ -392,15 +402,16 @@ test('PMT: Monthly withdrawal from $1M at 4% for 30 years', () => {
 });
 
 // Test 8: Beginning of period (annuity due)
+// PMT=-100 (deposits), FV will be negative (account balance)
 test('FV: Annuity due - $100/month at 6% for 10 years (BGN mode)', () => {
   const n = 120;
   const iy = 6;
   const pv = 0;
-  const pmt = -100;
+  const pmt = -100;  // Deposit $100/month
   const cy = 12, py = 12;
   const i = getPeriodicRate(iy, cy, py);
   const fv = solveFV(n, i, pv, pmt, true); // BGN mode
-  assertClose(fv, 16469.87, 10); // Higher than END mode due to earlier payments
+  assertClose(fv, -16469.87, 10); // Negative = account balance
 });
 
 // Test 9: NPV calculation
@@ -457,26 +468,29 @@ test('PMT: $25,000 car loan at 5.5% for 5 years', () => {
 });
 
 // Test 14: College savings goal
+// Goal FV=-100000 (account balance), calculate PMT needed
 test('PMT: Save for $100,000 college fund in 18 years at 7%', () => {
   const n = 216; // 18 years * 12 months
   const iy = 7;
   const pv = 0;
-  const fv = 100000;
+  const fv = -100000;  // Negative = target account balance
   const cy = 12, py = 12;
   const i = getPeriodicRate(iy, cy, py);
   const pmt = solvePMT(n, i, pv, fv, false);
-  // PMT = FV / annuityFactor ≈ $232.17/month
+  // PMT = (FV - PV*compound) / AF = -100000 / AF ≈ -$232.17/month (deposits)
   assertClose(pmt, -232.17, 1);
 });
 
 // Test 15: Zero interest rate edge case
+// PV=-1000, PMT=-100 (deposits), FV = PV + PMT*N
 test('FV: Zero interest rate (simple addition)', () => {
   const n = 12;
   const i = 0;
-  const pv = -1000;
-  const pmt = -100;
+  const pv = -1000;   // Initial deposit
+  const pmt = -100;   // Monthly deposits
   const fv = solveFV(n, i, pv, pmt, false);
-  assertClose(fv, 2200, 0.01); // 1000 + 12*100 = 2200
+  // FV = PV + PMT*N = -1000 + (-100)*12 = -2200
+  assertClose(fv, -2200, 0.01);
 });
 
 // ===== AMORTIZATION TESTS =====
@@ -584,35 +598,37 @@ test('Basic arithmetic: division', () => {
 test('Edge case: Very small interest rate (0.001%)', () => {
   const n = 12;
   const iy = 0.001;
-  const pv = -10000;
+  const pv = -10000;  // Investment
   const pmt = 0;
   const cy = 12, py = 12;
   const i = getPeriodicRate(iy, cy, py);
   const fv = solveFV(n, i, pv, pmt, false);
-  assertClose(fv, 10000.10, 0.01); // Almost no growth (0.001% annual = $0.10)
+  // FV = PV * compound = -10000 * 1.00001 ≈ -10000.10
+  assertClose(fv, -10000.10, 0.01);
 });
 
 test('Edge case: Large N (1000 periods)', () => {
   const n = 1000;
   const iy = 5;
-  const pv = -100;
+  const pv = -100;  // Investment
   const pmt = 0;
   const cy = 12, py = 12;
   const i = getPeriodicRate(iy, cy, py);
   const fv = solveFV(n, i, pv, pmt, false);
-  // Should handle large exponents without overflow
-  assertClose(fv > 0, true, 0);
+  // Should handle large exponents without overflow, FV should be negative
+  assertClose(fv < 0, true, 0);
 });
 
 test('Edge case: Negative interest rate (-2%)', () => {
   const n = 12;
   const iy = -2;
-  const pv = -10000;
+  const pv = -10000;  // Investment
   const pmt = 0;
   const cy = 12, py = 12;
   const i = getPeriodicRate(iy, cy, py);
   const fv = solveFV(n, i, pv, pmt, false);
-  assertClose(fv, 9802.02, 1); // Loses value over time
+  // FV = PV * compound = -10000 * 0.98 ≈ -9802 (loses value)
+  assertClose(fv, -9802.02, 1);
 });
 
 console.log('\n=== Test Results ===');

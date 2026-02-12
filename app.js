@@ -16,8 +16,9 @@
     FV: null,
     
     // Settings (single source of truth)
-    py: 12,  // Payment periods per year
-    cy: 12,  // Compounding periods per year
+    // Start at 0 (unset) - user must set before computing
+    py: 0,   // Payment periods per year (0 = unset)
+    cy: 0,   // Compounding periods per year (0 = unset)
     BGN: false, // true = beginning of period, false = end
     
     // Entry state
@@ -149,8 +150,9 @@
     });
     
     // Update settings (read from state.py and state.cy)
-    elements.displayCY.textContent = state.cy;
-    elements.displayPY.textContent = state.py;
+    // Show "—" when unset (0)
+    elements.displayCY.textContent = state.cy > 0 ? state.cy : '—';
+    elements.displayPY.textContent = state.py > 0 ? state.py : '—';
     elements.displayBGN.textContent = state.BGN ? 'BGN' : 'END';
     
     // Update entry display
@@ -310,63 +312,70 @@
   }
 
   /**
-   * Solve for FV
-   * FV = -PV * (1+i)^N - PMT * annuityFactor
+   * Solve for FV using proper compound interest formulas:
+   * 
+   * For lump sum (PMT=0): FV = PV * (1+r)^N
+   * For annuity: FV = PV*(1+r)^N + PMT*((1+r)^N - 1)/r
+   * For BGN mode: multiply annuity portion by (1+r)
    */
   function solveFV(n, i, pv, pmt, isBegin) {
-    const pvf = Math.pow(1 + i, n);
+    const compoundFactor = Math.pow(1 + i, n);  // (1+r)^N
     const af = annuityFactor(i, n, isBegin);
-    return -(pv * pvf + pmt * af);
+    
+    // FV = PV * (1+r)^N + PMT * annuityFactor
+    return pv * compoundFactor + pmt * af;
   }
 
   /**
    * Solve for PV
-   * From: PV * (1+i)^N + PMT * AF + FV = 0
-   * PV = -(PMT * AF + FV) / (1+i)^N
+   * From: FV = PV*(1+r)^N + PMT*AF
+   * PV = (FV - PMT*AF) / (1+r)^N
    */
   function solvePV(n, i, pmt, fv, isBegin) {
-    const fvf = Math.pow(1 + i, n);  // Future value factor (1+i)^N
+    const compoundFactor = Math.pow(1 + i, n);  // (1+r)^N
     const af = annuityFactor(i, n, isBegin);
-    return -(pmt * af + fv) / fvf;
+    
+    return (fv - pmt * af) / compoundFactor;
   }
 
   /**
    * Solve for PMT
-   * From: PV * (1+i)^N + PMT * AF + FV = 0
-   * PMT = -(PV * (1+i)^N + FV) / AF
+   * From: FV = PV*(1+r)^N + PMT*AF
+   * PMT = (FV - PV*(1+r)^N) / AF
    */
   function solvePMT(n, i, pv, fv, isBegin) {
-    const fvf = Math.pow(1 + i, n);  // Future value factor (1+i)^N
+    const compoundFactor = Math.pow(1 + i, n);  // (1+r)^N
     const af = annuityFactor(i, n, isBegin);
     
     if (Math.abs(af) < 1e-15) {
       return NaN;
     }
     
-    return -(pv * fvf + fv) / af;
+    return (fv - pv * compoundFactor) / af;
   }
 
   /**
    * Solve for N using logarithm when possible
    */
+  /**
+   * Solve for N
+   * From: FV = PV*(1+r)^N + PMT*AF
+   * 
+   * Special case PMT=0: N = ln(FV/PV) / ln(1+r)
+   */
   function solveN(i, pv, pmt, fv, isBegin) {
     if (Math.abs(i) < 1e-10) {
-      // Zero interest: N = -(PV + FV) / PMT
+      // Zero interest: FV = PV + PMT*N, so N = (FV - PV) / PMT
       if (Math.abs(pmt) < 1e-15) return NaN;
-      return -(pv + fv) / pmt;
+      return (fv - pv) / pmt;
     }
     
-    const pmtAdj = isBegin ? pmt * (1 + i) : pmt;
-    
-    // From: PV + PMT*[(1+i)^N - 1]/i + FV*(1+i)^(-N) = 0
-    // This requires numeric solving in general case
-    
-    // Special case: PMT = 0
+    // Special case: PMT = 0 (lump sum)
     if (Math.abs(pmt) < 1e-15) {
-      // PV * (1+i)^N + FV = 0
-      // (1+i)^N = -FV/PV
+      // FV = PV * (1+i)^N
+      // (1+i)^N = FV/PV
       if (Math.abs(pv) < 1e-15) return NaN;
-      const ratio = -fv / pv;
+      const ratio = fv / pv;
       if (ratio <= 0) return NaN;
       return Math.log(ratio) / Math.log(1 + i);
     }
@@ -377,11 +386,12 @@
 
   function solveNNumeric(i, pv, pmt, fv, isBegin) {
     // Use bisection with reasonable bounds
-    // TVM equation: PV * (1+i)^N + PMT * AF + FV = 0
+    // From: FV = PV*(1+r)^N + PMT*AF
+    // So: FV - PV*(1+r)^N - PMT*AF = 0
     const f = (n) => {
-      if (n <= 0) return pv + fv; // Not valid
-      const fvf = Math.pow(1 + i, n);
-      return pv * fvf + pmt * annuityFactor(i, n, isBegin) + fv;
+      if (n <= 0) return fv - pv; // Not valid
+      const compoundFactor = Math.pow(1 + i, n);
+      return fv - pv * compoundFactor - pmt * annuityFactor(i, n, isBegin);
     };
     
     // Find bounds
@@ -419,38 +429,40 @@
   /**
    * Solve for I/Y using Newton-Raphson with bisection fallback
    */
+  /**
+   * Solve for I/Y using Newton-Raphson
+   * From: FV = PV*(1+i)^N + PMT*AF
+   * Find i such that: FV - PV*(1+i)^N - PMT*AF = 0
+   */
   function solveIY(n, pv, pmt, fv, isBegin, cy, py) {
-    // We need to find the nominal annual rate
-    // TVM equation: PV * (1+i)^N + PMT * AF + FV = 0
-    // where i = periodic rate, which relates to nominal rate
-    
-    // Objective function in terms of periodic rate i
+    // Objective function: FV - PV*(1+i)^N - PMT*AF = 0
     const f = (i) => {
-      const fvf = Math.pow(1 + i, n);
+      const compoundFactor = Math.pow(1 + i, n);
       const af = annuityFactor(i, n, isBegin);
-      return pv * fvf + pmt * af + fv;
+      return fv - pv * compoundFactor - pmt * af;
     };
     
     // Derivative for Newton-Raphson
-    // d/di of [PV * (1+i)^N + PMT * AF + FV]
+    // d/di of [FV - PV*(1+i)^N - PMT*AF]
+    // = -PV*N*(1+i)^(N-1) - PMT*dAF/di
     const df = (i) => {
       if (Math.abs(i) < 1e-10) {
         // Derivative at i≈0: approximate
-        return pv * n + pmt * n * (n + 1) / 2;
+        return -pv * n - pmt * n * (n + 1) / 2;
       }
       
       const onePlusI = 1 + i;
       const onePlusIN = Math.pow(onePlusI, n);
       
       // d/di of (1+i)^N = N * (1+i)^(N-1)
-      const dFvf = n * Math.pow(onePlusI, n - 1);
+      const dCompound = n * Math.pow(onePlusI, n - 1);
       
       // d/di of annuity factor AF = [(1+i)^N - 1] / i
       const af = (onePlusIN - 1) / i;
       const dAf = (n * Math.pow(onePlusI, n - 1) * i - (onePlusIN - 1)) / (i * i);
       const dAfBgn = isBegin ? (dAf * onePlusI + af) : dAf;
       
-      return pv * dFvf + pmt * dAfBgn;
+      return -pv * dCompound - pmt * dAfBgn;
     };
     
     // Try Newton-Raphson first
@@ -549,6 +561,12 @@
     clearMessage();
     state.rclMode = false;
     
+    // Check if P/Y and C/Y are set (must be > 0)
+    if (state.py <= 0 || state.cy <= 0) {
+      showMessage('SET P/Y AND C/Y', 'error');
+      return;
+    }
+    
     // Find which variable is blank
     const tvmVars = ['N', 'IY', 'PV', 'PMT', 'FV'];
     const blankVars = tvmVars.filter(v => state[v] === null);
@@ -571,6 +589,7 @@
     const pv = state.PV;
     const pmt = state.PMT;
     const fv = state.FV;
+    // Use effective values (should be > 0 at this point due to check above)
     const cy = state.cy;
     const py = state.py;
     const isBegin = state.BGN;
@@ -664,10 +683,9 @@
     state.PV = null;
     state.PMT = null;
     state.FV = null;
-    state.cy = 12;
-    state.py = 12;
-    console.log('RESET: P/Y set to', state.py);
-    console.log('RESET: C/Y set to', state.cy);
+    state.cy = 0;  // Unset - user must configure
+    state.py = 0;  // Unset - user must configure
+    console.log('RESET: P/Y and C/Y cleared (unset)');
     state.BGN = false;
     state.entry = '0';
     state.isNewEntry = true;
@@ -1029,6 +1047,12 @@
       return;
     }
     
+    // Check P/Y is set
+    if (state.py <= 0) {
+      showMessage('SET P/Y first', 'error');
+      return;
+    }
+    
     // Get discount rate - use I/Y if set, otherwise prompt
     let rate = state.IY;
     if (rate === null) {
@@ -1067,6 +1091,12 @@
   function calculateIRR() {
     if (state.cashFlows.length < 2) {
       showMessage('Enter at least 2 cash flows', 'error');
+      return;
+    }
+    
+    // Check P/Y is set
+    if (state.py <= 0) {
+      showMessage('SET P/Y first', 'error');
       return;
     }
     
@@ -1202,6 +1232,12 @@
       return;
     }
     
+    // Check P/Y and C/Y are set
+    if (state.py <= 0 || state.cy <= 0) {
+      showMessage('SET P/Y AND C/Y', 'error');
+      return;
+    }
+    
     if (state.mode === 'amort') {
       // Already in AMORT mode, go back to TVM
       setMode('tvm');
@@ -1262,6 +1298,12 @@
   
   function calculateAmort() {
     if (state.N === null || state.IY === null || state.PV === null || state.PMT === null) {
+      state.amortResults = null;
+      return;
+    }
+    
+    // Check P/Y and C/Y are set
+    if (state.py <= 0 || state.cy <= 0) {
       state.amortResults = null;
       return;
     }
@@ -1578,20 +1620,23 @@
   const diagTests = [
     {
       name: 'Test 1: FV of lump sum',
+      // PV=-100 (invest $100), FV should be -259.37 (account balance)
       setup: { PY: 1, CY: 1, BGN: false, N: 10, IY: 10, PV: -100, PMT: 0, FV: null },
       solve: 'FV',
-      expected: 259.37,
+      expected: -259.37,
       tolerance: 0.1
     },
     {
       name: 'Test 2: PV of lump sum',
-      setup: { PY: 1, CY: 1, BGN: false, N: 10, IY: 10, PV: null, PMT: 0, FV: 259.37 },
+      // FV=-259.37 (target balance), PV should be -100 (initial investment needed)
+      setup: { PY: 1, CY: 1, BGN: false, N: 10, IY: 10, PV: null, PMT: 0, FV: -259.37 },
       solve: 'PV',
       expected: -100,
       tolerance: 0.1
     },
     {
       name: 'Test 3: Loan payment (END)',
+      // PV=200000 (loan received), FV=0 (paid off), solve for PMT
       setup: { PY: 12, CY: 12, BGN: false, N: 360, IY: 6, PV: 200000, PMT: null, FV: 0 },
       solve: 'PMT',
       expected: -1199.10,
@@ -1599,6 +1644,7 @@
     },
     {
       name: 'Test 4: Interest solve',
+      // Given loan PV=200000, PMT=-1199.10, FV=0, solve for I/Y
       setup: { PY: 12, CY: 12, BGN: false, N: 360, IY: null, PV: 200000, PMT: -1199.10, FV: 0 },
       solve: 'IY',
       expected: 6.0,
@@ -1606,9 +1652,10 @@
     },
     {
       name: 'Test 5: BGN mode check',
+      // BGN PMT should be smaller in magnitude than END PMT
       setup: { PY: 12, CY: 12, BGN: true, N: 360, IY: 6, PV: 200000, PMT: null, FV: 0 },
       solve: 'PMT',
-      compare: 'Test 3', // BGN PMT should be smaller in magnitude than END PMT
+      compare: 'Test 3',
       compareType: 'lessMagnitude'
     }
   ];
@@ -1694,7 +1741,12 @@
   }
   
   function runAllDiagnostics() {
-    console.log('=== TVM Diagnostics ===');
+    console.log('');
+    console.log('╔═══════════════════════════════════════╗');
+    console.log('║       TVM SELF-TEST DIAGNOSTICS       ║');
+    console.log('╚═══════════════════════════════════════╝');
+    console.log('');
+    
     const results = {};
     const allResults = [];
     
@@ -1703,22 +1755,42 @@
       results[test.name] = result;
       allResults.push(result);
       
-      // Log to console
-      const status = result.pass ? 'PASS' : 'FAIL';
+      // Log to console with clear formatting
+      const status = result.pass ? '✓ PASS' : '✗ FAIL';
+      const computedStr = typeof result.computed === 'number' 
+        ? result.computed.toFixed(6) 
+        : result.computed;
+      
       console.log(`${status}: ${result.name}`);
-      console.log(`  Computed: ${typeof result.computed === 'number' ? result.computed.toFixed(6) : result.computed}`);
-      console.log(`  Expected: ${result.expected}`);
+      console.log(`    Computed: ${computedStr}`);
+      console.log(`    Expected: ${result.expected}`);
       if (!result.pass && result.error) {
-        console.log(`  Error: ${result.error}`);
+        console.log(`    Error: ${result.error}`);
       }
+      console.log('');
     }
     
     const passed = allResults.filter(r => r.pass).length;
     const total = allResults.length;
-    console.log(`\nResults: ${passed}/${total} tests passed`);
+    
+    console.log('═══════════════════════════════════════');
+    if (passed === total) {
+      console.log(`✓ ALL TESTS PASSED: ${passed}/${total}`);
+    } else {
+      console.log(`✗ TESTS FAILED: ${passed}/${total} passed`);
+    }
+    console.log('═══════════════════════════════════════');
     
     return allResults;
   }
+  
+  // Alias for external calling
+  function runSelfTests() {
+    return runAllDiagnostics();
+  }
+  
+  // Expose runSelfTests globally for console access
+  window.runSelfTests = runSelfTests;
   
   function displayDiagResults(results) {
     const body = document.getElementById('diag-body');
