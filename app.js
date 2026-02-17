@@ -2,7 +2,7 @@
  * Financial Calculator - Time Value of Money
  * Implements standard TVM calculations with proper compounding
  */
-console.log("ENTER FIX VERSION = v2");
+console.log("ENTER FIX VERSION = v3");
 
 // Disable service worker to prevent caching issues on GitHub Pages
 const ENABLE_SW = false;
@@ -658,14 +658,21 @@ const ENABLE_SW = false;
     const blankVars = tvmVars.filter(v => state[v] === null);
     
     if (blankVars.length === 0) {
-      // All registers are set - arm CPT mode so next TVM key press computes that variable
-      state.computeArmed = true;
-      showMessage('CPT → PRESS VARIABLE TO SOLVE', 'info');
+      // All registers are set
+      if (state.lastComputedVar) {
+        // Recompute the same variable that was last computed
+        // This allows: change an input, press CPT, get new result
+        computeVariable(state.lastComputedVar);
+      } else {
+        // No previous computation - arm CPT mode so user can select which to solve
+        state.computeArmed = true;
+        showMessage('CPT → PRESS VARIABLE TO SOLVE', 'info');
+      }
       return;
     }
     
     if (blankVars.length > 1) {
-      showMessage('SET MORE VALUES', 'error');
+      showMessage('CLEAR ONE VARIABLE TO SOLVE', 'error');
       return;
     }
     
